@@ -356,7 +356,6 @@ where
             surface.attach(Some(wl_buffer), 0, 0);
             surface.commit();
 
-            dbg!("attached buffer, damaged surface.");
             self.dnd_state.icon_surface = Some(surface);
         }
 
