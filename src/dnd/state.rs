@@ -127,6 +127,13 @@ where
                     if let Some(tx) = self.dnd_state.sender.as_ref() {
                         _ = tx.send(DndEvent::Offer(had_dest, super::OfferEvent::LeaveDestination));
                     }
+                    if let Some(dnd_state) = dnd_state.as_ref() {
+                        dnd_state.set_actions(DndAction::empty(), DndAction::empty());
+                        dnd_state.accept_mime_type(self.dnd_state.accept_ctr, None);
+                        self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
+                        self.dnd_state.selected_action = DndAction::empty();
+                        self.dnd_state.selected_mime = None;
+                    }
                 }
                 if let (Some((action, preferred_action)), Some(mime_type), Some(dnd_state)) =
                     (actions, mime, dnd_state.as_ref())
