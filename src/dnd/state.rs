@@ -21,9 +21,9 @@ use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, Icon, Off
 
 pub(crate) struct DndState<T> {
     pub(crate) sender: Option<Box<dyn crate::dnd::Sender<T>>>,
-    destinations: HashMap<ObjectId, (DndSurface<T>, Vec<DndDestinationRectangle>)>,
+    destinations: HashMap<ObjectId, (DndSurface<T>, Vec<(DndDestinationRectangle, bool)>)>,
     pub(crate) dnd_source: Option<DragSource>,
-    active_surface: Option<(DndSurface<T>, Option<DndDestinationRectangle>)>,
+    active_surface: Option<(DndSurface<T>, Option<DndDestinationRectangle>, bool)>,
     source_actions: DndAction,
     selected_action: DndAction,
     selected_mime: Option<MimeType>,
@@ -54,7 +54,7 @@ impl<T> DndState<T> {
         self.selected_action = a;
         if let Some(tx) = self.sender.as_ref() {
             _ = tx.send(DndEvent::Offer(
-                self.active_surface.as_ref().and_then(|(_, d)| d.as_ref().map(|d| d.id)),
+                self.active_surface.as_ref().and_then(|(_, d, _)| d.as_ref().map(|d| d.id)),
                 OfferEvent::SelectedAction(a),
             ));
         }
@@ -76,32 +76,35 @@ where
             .dnd_state
             .active_surface
             .as_ref()
-            .map(|(_, d)| d.as_ref().map(|d| d.id))
+            .map(|(_, d, _)| d.as_ref().map(|d| d.id))
             .unwrap_or_default();
         self.dnd_state.active_surface =
             self.dnd_state.destinations.get(&surface.id()).map(|(s, dests)| {
-                let Some((dest, mime, actions)) = dests.iter().find_map(|r| {
-                    let actions = dnd_state.as_ref().map(|s| {
-                        (
-                            s.source_actions.intersection(r.actions),
-                            s.source_actions.intersection(r.preferred),
-                        )
-                    });
-                    let mime = dnd_state.as_ref().and_then(|dnd_state| {
-                        r.mime_types.iter().find(|m| {
-                            dnd_state.with_mime_types(|mimes| mimes.iter().any(|a| a == m.as_ref()))
-                        })
-                    });
+                let Some((dest, has_children, mime, actions)) =
+                    dests.iter().find_map(|(r, has_children)| {
+                        let actions = dnd_state.as_ref().map(|s| {
+                            (
+                                s.source_actions.intersection(r.actions),
+                                s.source_actions.intersection(r.preferred),
+                            )
+                        });
+                        let mime = dnd_state.as_ref().and_then(|dnd_state| {
+                            r.mime_types.iter().find(|m| {
+                                dnd_state
+                                    .with_mime_types(|mimes| mimes.iter().any(|a| a == m.as_ref()))
+                            })
+                        });
 
-                    (r.rectangle.contains(x, y)
-                        && (r.mime_types.is_empty() || mime.is_some())
-                        && (r.actions.is_all()
-                            || dnd_state
-                                .as_ref()
-                                .map(|dnd_state| dnd_state.source_actions.intersects(r.actions))
-                                .unwrap_or(true)))
-                    .then(|| (r.clone(), mime, actions))
-                }) else {
+                        (r.rectangle.contains(x, y)
+                            && (r.mime_types.is_empty() || mime.is_some())
+                            && (r.actions.is_all()
+                                || dnd_state
+                                    .as_ref()
+                                    .map(|dnd_state| dnd_state.source_actions.intersects(r.actions))
+                                    .unwrap_or(true)))
+                        .then(|| (r.clone(), has_children, mime, actions))
+                    })
+                else {
                     if let Some(old_id) = had_dest {
                         if let Some(dnd_state) = dnd_state.as_ref() {
                             if let Some(tx) = self.dnd_state.sender.as_ref() {
@@ -117,8 +120,14 @@ where
                             self.dnd_state.selected_mime = None;
                         }
                     }
-                    return (s.clone(), None);
+                    return (s.clone(), None, false);
                 };
+
+                if had_dest != Some(dest.id) {
+                    if let Some(tx) = self.dnd_state.sender.as_ref() {
+                        _ = tx.send(DndEvent::Offer(had_dest, super::OfferEvent::LeaveDestination));
+                    }
+                }
                 if let (Some((action, preferred_action)), Some(mime_type), Some(dnd_state)) =
                     (actions, mime, dnd_state.as_ref())
                 {
@@ -128,12 +137,12 @@ where
                         .accept_mime_type(self.dnd_state.accept_ctr, Some(mime_type.to_string()));
                     self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
                 }
-                (s.clone(), Some(dest))
+                (s.clone(), Some(dest), *has_children)
             });
     }
 
     fn cur_id(&self) -> Option<u128> {
-        self.dnd_state.active_surface.as_ref().and_then(|(_, rect)| rect.as_ref().map(|r| r.id))
+        self.dnd_state.active_surface.as_ref().and_then(|(_, rect, _)| rect.as_ref().map(|r| r.id))
     }
 
     pub(crate) fn offer_drop(&mut self, wl_data_device: &WlDataDevice) {
@@ -201,7 +210,7 @@ where
             .dnd_state
             .active_surface
             .as_ref()
-            .map(|(s, d)| (s.clone(), d.as_ref().map(|d| d.id)))
+            .map(|(s, d, _)| (s.clone(), d.as_ref().map(|d| d.id)))
         else {
             return;
         };
@@ -218,11 +227,10 @@ where
     }
 
     pub(crate) fn offer_motion(&mut self, x: f64, y: f64, wl_data_device: &WlDataDevice) {
-        let Some((surface, dest)) = self
-            .dnd_state
-            .active_surface
-            .clone()
-            .map(|(s, dest)| (s, dest.filter(|d| d.rectangle.contains(x, y))))
+        let Some((surface, dest)) =
+            self.dnd_state.active_surface.clone().map(|(s, dest, has_children)| {
+                (s, dest.filter(|d| d.rectangle.contains(x, y) && !has_children))
+            })
         else {
             return;
         };
@@ -260,7 +268,29 @@ where
         match r {
             DndRequest::InitDnd(sender) => self.dnd_state.sender = Some(sender),
             DndRequest::Surface(s, dests) => {
-                self.dnd_state.destinations.insert(s.surface.id(), (s, dests));
+                self.dnd_state.destinations.insert(
+                    s.surface.id(),
+                    (
+                        s,
+                        dests
+                            .iter()
+                            .enumerate()
+                            .map(|(a_i, a)| {
+                                (
+                                    a.clone(),
+                                    dests.iter().enumerate().any(|(b_i, b)| {
+                                        b_i < a_i
+                                            && a.rectangle.contains(b.rectangle.x, b.rectangle.y)
+                                            && a.rectangle.contains(
+                                                b.rectangle.x + b.rectangle.width,
+                                                b.rectangle.y + b.rectangle.height,
+                                            )
+                                    }),
+                                )
+                            })
+                            .collect(),
+                    ),
+                );
             },
             DndRequest::StartDnd { internal, source, icon, content, actions } => {
                 _ = self.start_dnd(internal, source, icon, content, actions);
