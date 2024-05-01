@@ -275,29 +275,34 @@ where
         match r {
             DndRequest::InitDnd(sender) => self.dnd_state.sender = Some(sender),
             DndRequest::Surface(s, dests) => {
-                self.dnd_state.destinations.insert(
-                    s.surface.id(),
-                    (
-                        s,
-                        dests
-                            .iter()
-                            .enumerate()
-                            .map(|(a_i, a)| {
-                                (
-                                    a.clone(),
-                                    dests.iter().enumerate().any(|(b_i, b)| {
-                                        b_i < a_i
-                                            && a.rectangle.contains(b.rectangle.x, b.rectangle.y)
-                                            && a.rectangle.contains(
-                                                b.rectangle.x + b.rectangle.width,
-                                                b.rectangle.y + b.rectangle.height,
-                                            )
-                                    }),
-                                )
-                            })
-                            .collect(),
-                    ),
-                );
+                if dests.is_empty() {
+                    self.dnd_state.destinations.remove(&s.surface.id());
+                } else {
+                    self.dnd_state.destinations.insert(
+                        s.surface.id(),
+                        (
+                            s,
+                            dests
+                                .iter()
+                                .enumerate()
+                                .map(|(a_i, a)| {
+                                    (
+                                        a.clone(),
+                                        dests.iter().enumerate().any(|(b_i, b)| {
+                                            b_i < a_i
+                                                && a.rectangle
+                                                    .contains(b.rectangle.x, b.rectangle.y)
+                                                && a.rectangle.contains(
+                                                    b.rectangle.x + b.rectangle.width,
+                                                    b.rectangle.y + b.rectangle.height,
+                                                )
+                                        }),
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
             },
             DndRequest::StartDnd { internal, source, icon, content, actions } => {
                 _ = self.start_dnd(internal, source, icon, content, actions);
